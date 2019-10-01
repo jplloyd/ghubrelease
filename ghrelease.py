@@ -2,7 +2,6 @@
 # Copyright (C) 2019 Jesper Lloyd
 # Released under GNU GPL v2+, read the file 'LICENSE' for more information.
 
-
 import argparse
 import json
 import os
@@ -198,9 +197,32 @@ def envvar_name_check(name):
     return name
 
 
+def repo_slug(slug):
+    # Only check the basic shape
+    if not (
+        '/' in slug and
+        0 < slug.index('/') < len(slug)-1 and
+        slug.index('/') == slug.rindex('/')
+    ):
+        raise argparse.ArgumentTypeError(
+            '"{invalid_slug}" is not a valid repo slug.\n'
+            'A repo slug is of the form: "username/repository"'
+            ''.format(invalid_slug=slug)
+            )
+    return slug
+
+
 def main():
     parser = argparse.ArgumentParser()
 
+    parser.add_argument(
+        "repo-slug", type=repo_slug, metavar="REPO_SLUG",
+        help="The 'user/repository' combination of the release"
+    )
+    parser.add_argument(
+        "tag", metavar="TAG_NAME", type=str,
+        help="The release tag to operate on"
+    )
     auth_group = parser.add_mutually_exclusive_group(required=True)
     auth_group.add_argument(
         "-a", "--auth-token-var", metavar="VAR_NAME",
@@ -211,27 +233,36 @@ def main():
         "-A", "--auth-token", metavar="TOKEN", type=str,
         help="Pass the github auth token directly (be careful with logs!)"
     )
-    action_group = parser.add_mutually_exclusive_group(required=True)
-    action_group.add_argument(
-        "-r", "--rotate", metavar="MAX_NUM_ASSETS", type=int,
-        help="Upload new assets to existing release, "
-             "deleting oldest existing ones to make space."
+
+    subparsers = parser.add_subparsers(
+        title="commands", description="Commands that can be issued",
+        dest='command'
     )
-    action_group.add_argument(
-        "-R", "--replace", action="store_true",
-        help="Delete the release (if it exists) and replace it with a new one."
+    subparsers.required = True
+    parser_create = subparsers.add_parser(
+        'create', help="Create a new release",
     )
-    parser.add_argument(
-        "repo-slug", type=str, metavar="REPO_SLUG",
-        help="The 'user/repository' combination of the release"
+    parser_create.add_argument(
+        "file_paths", nargs="*", metavar="FILE", type=filepath_existing,
+        help="Path to asset that will be added to the new release."
     )
-    parser.add_argument(
-        "tag", metavar="TAG_NAME", type=str,
-        help="The release tag to operate on"
+    subparsers.add_parser(
+        'delete', help="Delete the release, if it exists."
     )
-    parser.add_argument(
+    parser_replace = subparsers.add_parser(
+        'replace', help="Delete the old release and create a new one."
+    )
+    parser_replace.add_argument(
+        "file_paths", nargs="*", metavar="FILE", type=filepath_existing,
+        help="Path to asset that will be added to the new release."
+    )
+    parser_rotate = subparsers.add_parser(
+        'rotate', help="Upload assets to existing release, "
+        "deleting the oldest existing assets to make space if necessary."
+    )
+    parser_rotate.add_argument(
         "file_paths", nargs="+", metavar="FILE", type=filepath_existing,
-        help="Path to a file to upload as a release asset"
+        help="Path to asset that will be added to the existing release."
     )
     args = parser.parse_args()
     return args
