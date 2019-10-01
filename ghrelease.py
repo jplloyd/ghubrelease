@@ -7,6 +7,7 @@ import json
 import os
 import re
 import requests
+import sys
 
 
 class ReleaseManager:
@@ -212,11 +213,11 @@ def repo_slug(slug):
     return slug
 
 
-def main():
+def get_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "repo-slug", type=repo_slug, metavar="REPO_SLUG",
+        "repo_slug", type=repo_slug, metavar="REPO_SLUG",
         help="The 'user/repository' combination of the release"
     )
     parser.add_argument(
@@ -264,7 +265,16 @@ def main():
         "file_paths", nargs="+", metavar="FILE", type=filepath_existing,
         help="Path to asset that will be added to the existing release."
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = get_parser().parse_args()
+    if args.auth_token:
+        auth_token = args.auth_token
+    else:
+        auth_token = sys.environ.get(args.auth_token_var)
+    rm = ReleaseManager(args.repo_slug, args.tag, auth_token)
     return args
 
 
