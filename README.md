@@ -7,3 +7,7 @@ you will need an authentication token with the appropriate privileges for
 the repositories you want to work with.
 
 Call the main script with `--help` for usage instructions.
+
+## Requirements
+
+Python3 (>= 3.5) and the `requests` package.
