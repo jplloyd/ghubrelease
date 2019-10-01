@@ -200,12 +200,7 @@ def envvar_name_check(name):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-s", "--repo-slug", type=str)
-    parser.add_argument(
-        "-t", "--tag", metavar="TAG_NAME", type=str,
-        required=True, help="Release tag to operate on"
-    )
+
     auth_group = parser.add_mutually_exclusive_group(required=True)
     auth_group.add_argument(
         "-a", "--auth-token-var", metavar="VAR_NAME",
@@ -227,7 +222,16 @@ def main():
         help="Delete the release (if it exists) and replace it with a new one."
     )
     parser.add_argument(
-        "file_paths", nargs="+", metavar="FILE", type=filepath_existing
+        "repo-slug", type=str, metavar="REPO_SLUG",
+        help="The 'user/repository' combination of the release"
+    )
+    parser.add_argument(
+        "tag", metavar="TAG_NAME", type=str,
+        help="The release tag to operate on"
+    )
+    parser.add_argument(
+        "file_paths", nargs="+", metavar="FILE", type=filepath_existing,
+        help="Path to a file to upload as a release asset"
     )
     args = parser.parse_args()
     return args
