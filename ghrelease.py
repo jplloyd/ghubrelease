@@ -199,27 +199,26 @@ def envvar_name_check(name):
 
 
 def main():
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-s", "--repo-slug", type=str, nargs=1)
+        "-s", "--repo-slug", type=str)
     parser.add_argument(
-        "-t", "--tag", metavar="TAG_NAME", type=str, nargs=1,
+        "-t", "--tag", metavar="TAG_NAME", type=str,
         required=True, help="Release tag to operate on"
     )
     auth_group = parser.add_mutually_exclusive_group(required=True)
     auth_group.add_argument(
         "-a", "--auth-token-var", metavar="VAR_NAME",
-        type=envvar_name_check, nargs=1,
+        type=envvar_name_check,
         help="The environment variable holding the github auth token",
     )
     auth_group.add_argument(
-        "-A", "--auth-token", metavar="TOKEN", type=str, nargs=1,
+        "-A", "--auth-token", metavar="TOKEN", type=str,
         help="Pass the github auth token directly (be careful with logs!)"
     )
     action_group = parser.add_mutually_exclusive_group(required=True)
     action_group.add_argument(
-        "-r", "--rotate", metavar="MAX_NUM_ASSETS", type=int, nargs=1,
+        "-r", "--rotate", metavar="MAX_NUM_ASSETS", type=int,
         help="Upload new assets to existing release, "
              "deleting oldest existing ones to make space."
     )
