@@ -7,7 +7,6 @@ import json
 import os
 import re
 import requests
-import sys
 
 
 class ReleaseManager:
@@ -297,7 +296,7 @@ def main():
     if args.auth_token:
         auth_token = args.auth_token
     else:
-        auth_token = sys.environ.get(args.auth_token_var)
+        auth_token = os.environ.get(args.auth_token_var)
     rm = ReleaseManager(args.repo_slug, args.tag, auth_token)
     return args
 
