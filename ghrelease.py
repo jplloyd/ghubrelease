@@ -242,7 +242,7 @@ def get_parser():
     )
     auth_group.add_argument(
         "-A", "--auth-token", metavar="TOKEN", type=str,
-        help="Pass the github auth token directly (be careful with logs!)"
+        help="Pass the github auth token directly (use with caution!)"
     )
 
     subparsers = parser.add_subparsers(
@@ -291,13 +291,50 @@ def get_parser():
     return parser
 
 
-def main():
-    args = get_parser().parse_args()
-    if args.auth_token:
+def verify_token(args):
+    """Verify that the given """
+    if args.auth_token is not None:
         auth_token = args.auth_token
     else:
         auth_token = os.environ.get(args.auth_token_var)
+        if auth_token is None:
+            print(
+                'The provided auth token environment variable: '
+                '"{envvar}" is not defined'.format(
+                    envvar=args.auth_token_var
+                )
+            )
+            exit(1)
+    if not auth_token:
+        print("The auth token cannot be empty!")
+        exit(1)
+    return auth_token
+
+
+def create(rm, args):
+    return rm.create_release(
+        args.title or "Untitled Release",
+        args.body or "",
+        assets=args.asset_paths,
+        commitish=args.commitish or "master"
+    )
+
+
+def main():
+    args = get_parser().parse_args()
+    auth_token = verify_token(args)
     rm = ReleaseManager(args.repo_slug, args.tag, auth_token)
+
+    if args.command == "create":
+        exit(create(rm, args))
+    elif args.command == "delete":
+        rm.delete_release()
+    elif args.command == "replace":
+        rm.delete_release()
+        create(rm, args)
+    elif args.command == "rotate":
+        rm.rotate_by_date(args.max_assets, args.asset_paths)
+
     return args
 
 
