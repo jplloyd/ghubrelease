@@ -199,7 +199,7 @@ def envvar_name_check(name):
 
 
 def repo_slug(slug):
-    # Only check the basic shape
+    # Only check the basic shape; exactly one '/' with something on both ends.
     if not (
         '/' in slug and
         0 < slug.index('/') < len(slug)-1 and
@@ -211,6 +211,17 @@ def repo_slug(slug):
             ''.format(invalid_slug=slug)
             )
     return slug
+
+
+def maxassets(value):
+    try:
+        intval = int(value)
+        assert intval > 0
+        return intval
+    except Exception:
+        raise argparse.ArgumentTypeError(
+            "The maximum number of assets must be a positive integer."
+        )
 
 
 def get_parser():
@@ -240,30 +251,43 @@ def get_parser():
         dest='command'
     )
     subparsers.required = True
-    parser_create = subparsers.add_parser(
-        'create', help="Create a new release",
+
+    release_options = argparse.ArgumentParser()
+    release_options.add_argument(
+        "-t", "--title", metavar="TITLE", type=str,
+        help="The release title")
+    release_options.add_argument(
+        "-b", "--body", metavar="BODY", type=str,
+        help="Contents of the release body")
+    release_options.add_argument(
+        "-c", "--commitish", metavar="COMMITISH", type=str,
+        help="Commit/branch of the release - only applies to new ones")
+    release_options.add_argument(
+        "asset_paths", nargs="*", metavar="FILE", type=filepath_existing,
+        help="Filepath of asset that will be added to the release."
     )
-    parser_create.add_argument(
-        "file_paths", nargs="*", metavar="FILE", type=filepath_existing,
-        help="Path to asset that will be added to the new release."
+
+    subparsers.add_parser(
+        'create', help="Create a new release",
+        parents=[release_options], conflict_handler='resolve'
     )
     subparsers.add_parser(
         'delete', help="Delete the release, if it exists."
     )
-    parser_replace = subparsers.add_parser(
-        'replace', help="Delete the old release and create a new one."
-    )
-    parser_replace.add_argument(
-        "file_paths", nargs="*", metavar="FILE", type=filepath_existing,
-        help="Path to asset that will be added to the new release."
+    subparsers.add_parser(
+        'replace', help="Replace an existing release with a new one.",
+        parents=[release_options], conflict_handler='resolve'
     )
     parser_rotate = subparsers.add_parser(
         'rotate', help="Upload assets to existing release, "
-        "deleting the oldest existing assets to make space if necessary."
+        "deleting the oldest existing assets to make space if necessary.",
     )
     parser_rotate.add_argument(
-        "file_paths", nargs="+", metavar="FILE", type=filepath_existing,
-        help="Path to asset that will be added to the existing release."
+        "max_assets", metavar="MAX_ASSETS", type=maxassets)
+    parser_rotate.add_argument(
+        "asset_paths", metavar="FILE", type=filepath_existing, nargs="+",
+        help="Filepath of asset that will be added to the release. "
+        "The number of files must be less than or equal to MAX_ASSETS."
     )
     return parser
 
