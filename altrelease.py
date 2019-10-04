@@ -139,7 +139,7 @@ class ReleaseManager:
         :rtype: (bool, requests.Response | None)
         """
         release_tag = tag or self.release_tag
-        info, _ = self.get_release_data(silent=True)
+        info, _ = self.get_release_data(tag=release_tag, silent=True)
         if info:
             log.warning("Release already exists: " + release_tag)
             return False, None
@@ -154,14 +154,15 @@ class ReleaseManager:
         return response.status_code == 201, response
 
     def edit_release(
-            self, tag=None, name=None, body=None,
+            self, tag=None, new_tag=None, name=None, body=None,
             commitish=None, draft=None, prerelease=None
     ):
         """Edit an existing release
 
         At least one parameter must be supplied, and the release must exist.
 
-        :param tag: Change existing tag to this value
+        :param tag: Tag of release to edit (default is self.release_tag)
+        :param new_tag: Change existing tag to this value
         :param name: Change the release name/title to this value
         :param body: Change the contents of the release body to this
         :param commitish: Change what the release points to
@@ -174,13 +175,13 @@ class ReleaseManager:
         :rtype: (bool, requests.Response | None)
         """
         data = self._release_data(
-            tag=tag, name=name, body=body, commitish=commitish,
+            tag=new_tag, name=name, body=body, commitish=commitish,
             draft=draft, prerelease=prerelease
         )
         if not data:
             log.error("No edit parameters supplied!")
             return False, None
-        info, _ = self.get_release_data()
+        info, _ = self.get_release_data(tag=tag)
         if not info:
             log.error("Release not found, cannot edit!")
             return False, None
@@ -193,15 +194,16 @@ class ReleaseManager:
                 log.error("Failed to edit release!")
             return response.status_code == 200, response
 
-    def delete_release(self):
+    def delete_release(self, tag=None):
         """Delete the release if it exists
 
+        :param tag: Tag of release to delete (default is self.release_tag)
         :return: (True, http response) if deletion is successful.
                  (False, http response) if deletion request is unsuccessful.
                  (False, None) if the release cannot be accessed.
         :rtype: (bool, requests.Response | None)
         """
-        info, _ = self.get_release_data()
+        info, _ = self.get_release_data(tag=tag)
         if not info:
             log.warning("Release not found; nothing deleted!")
             return False, None
@@ -213,7 +215,7 @@ class ReleaseManager:
         return response.status_code == 204, response
 
     def upload_asset(
-            self, asset_path,
+            self, asset_path, tag=None,
             asset_name=None, asset_label=None,
             replace_existing=False, max_assets=None
     ):
@@ -225,6 +227,7 @@ class ReleaseManager:
             An asset with the same name cannot exist in the same release
 
         :param asset_path: File path to the asset that will be uploaded
+        :param tag: Tag of release to upload to (default is self.release_tag)
         :param asset_name: Name to use instead of the file name (optional)
         :param asset_label: Label to display in the asset list (optional)
         :param replace_existing: Whether to delete older assets with the same
@@ -247,7 +250,7 @@ class ReleaseManager:
             return False, None
         if not asset_name:
             asset_name = os.path.basename(asset_path)
-        info, _ = self.get_release_data()
+        info, _ = self.get_release_data(tag=tag)
         if not info:
             log.error("Release data could not be retrieved, cannot upload.")
             return False, None
