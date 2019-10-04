@@ -47,14 +47,12 @@ class ReleaseManager:
             self,
             repo_slug,
             release_tag,
-            lenient=False,
             timeout=None,
             auth_token=None
     ):
         self.base_url = self.API_TEMPLATE.format(repo_slug=repo_slug)
         self.auth_token = auth_token
         self.release_tag = release_tag
-        self.lenient = lenient
         self.timeout = timeout
 
     @usetimeout
@@ -86,7 +84,7 @@ class ReleaseManager:
                   or None if the release is not found.
         :rtype: dict | None
         """
-        url = self.base_url + "tags/" + self.release_tag
+        url = self.base_url + "tags/{tag}".format(tag=self.release_tag)
         response = self.get(url, headers=self.get_headers())
         if response.status_code != 200:
             log.error("Failed to fetch release!")
@@ -97,7 +95,7 @@ class ReleaseManager:
             self,
             name=None,
             body=None,
-            commitish="master",
+            commitish=None,
             draft_release=False,
             pre_release=True,
             replace=False
@@ -136,7 +134,6 @@ class ReleaseManager:
         url = self.base_url[:-1]
         release_data = {
             "tag_name": self.release_tag,
-            "target_commitish": commitish,
             "draft": draft_release,
             "prerelease": pre_release
         }
@@ -144,6 +141,8 @@ class ReleaseManager:
             release_data['name'] = name
         if body:
             release_data['body'] = body
+        if commitish:
+            release_data["target_commitish"] = commitish
         response = self.post(
             url,
             json=release_data,
@@ -161,7 +160,8 @@ class ReleaseManager:
             body=None,
             commitish=None,
             draft=None,
-            prerelease=None
+            prerelease=None,
+            **unused
     ):
 
         """Edit an existing release
@@ -313,11 +313,12 @@ class ReleaseManager:
             data['label'] = new_label
 
         url = self.base_url + "assets/{id}".format(id=asset_id)
-        return self.patch(
+        response = self.patch(
             url,
             headers=self.get_headers(),
             json=data
         )
+        return response.status_code == 200
 
     def _upload(self, asset_name, asset_label, asset_path, release_info):
         url = release_info['upload_url']
@@ -346,8 +347,10 @@ class ReleaseManager:
         assets = sorted(info['assets'], key=lambda a: a['updated_at'])
         if len(assets) > max_assets:
             for a in assets[:len(assets) - max_assets]:
+                log.info("Deleting asset '{name}'".format(
+                    name=a['name']
+                ))
                 self.delete_asset(a['id'])
-
 
     def delete_asset(self, asset_id):
         """Delete asset with the given id
@@ -361,32 +364,6 @@ class ReleaseManager:
             headers=self.get_headers(),
         )
         return response.status_code == 204
-
-    def rotate_by_date(self, max_assets, new_assets):
-        """Upload new assets and remove old assets
-
-        Upload new assets and delete the n oldest
-        existing assets such that the number of assets
-        in the release does not exceed 'max_assets'
-        """
-        # Make sure our input is sane before anything is deleted
-        assert (0 < len(new_assets) <= max_assets)
-        for asset in new_assets:
-            path = asset
-            assert (os.path.isfile(path) and os.access(path, os.R_OK))
-
-        info = self.fetch_release()
-        assert (info is not None)
-        old_assets = sorted(info['assets'], key=lambda a: a['updated_at'])
-        spaces_left = (max_assets - len(old_assets)) - len(new_assets)
-
-        # Delete the oldest assets if we need to make space
-        if spaces_left < 0:
-            for asset in old_assets[:0-spaces_left]:
-                self.delete_asset(asset['id'])
-
-        for asset in new_assets:
-            self.upload_asset(asset)
 
 
 def filepath_existing(path):
@@ -426,7 +403,7 @@ def repo_slug_value(slug):
     return slug
 
 
-def maxassets(value):
+def max_assets(value):
     try:
         intval = int(value)
         assert intval > 0
@@ -465,54 +442,103 @@ def get_parser():
     )
     subparsers.required = True
 
+    # Common options for release creation/modification
     release_options = argparse.ArgumentParser()
     release_options.add_argument(
-        "-t", "--title", metavar="TITLE", type=str,
-        help="The release title")
+        "-name", "--name", metavar="NAME", type=str,
+        help="The name of the release")
     release_options.add_argument(
         "-b", "--body", metavar="BODY", type=str,
         help="Contents of the release body")
     release_options.add_argument(
         "-c", "--commitish", metavar="COMMITISH", type=str,
-        help="Commit/branch of the release - only applies to new ones")
+        help="Commit/branch of the release")
     release_options.add_argument(
-        "asset_paths", nargs="*", metavar="FILE", type=filepath_existing,
-        help="Filepath of asset that will be added to the release."
+        "-f", "--full-release", action='store_true',
+        help="Mark release as full release (not prerelease)"
+    )
+    release_options.add_argument(
+        '-d', '--draft', action='store_true',
+        help="Mark release as a draft"
     )
 
-    subparsers.add_parser(
+    # Create release
+    create_parser = subparsers.add_parser(
         'create', help="Create a new release",
         parents=[release_options], conflict_handler='resolve'
     )
+    create_parser.add_argument(
+        "-r", "--replace", action="store_true",
+        help="If there is an existing release for the tag, delete it first."
+    )
+
+    # Edit release
+    subparsers.add_parser(
+        'edit', help="Edit the release, if it exists.",
+        parents=[release_options], conflict_handler='resolve'
+    )
+
+    # Delete release
     subparsers.add_parser(
         'delete', help="Delete the release, if it exists."
     )
-    subparsers.add_parser(
-        'replace', help="Replace an existing release with a new one.",
-        parents=[release_options], conflict_handler='resolve'
+
+    # Common options for asset/creation modification
+    asset_options = argparse.ArgumentParser()
+    asset_options.add_argument(
+        "-n", "--name", metavar="NAME", type=str,
+        help="Asset name (file name when downloading)"
+             " - ignored when uploading multiple files"
     )
-    parser_rotate = subparsers.add_parser(
-        'rotate', help="Upload assets to existing release, "
-        "deleting the oldest existing assets to make space if necessary.",
+    asset_options.add_argument(
+        "-l", "--label", metavar="LABEL", type=str,
+        help="Asset label (the name that is displayed)"
+             " - ignored when uploading multiple files"
     )
-    parser_rotate.add_argument(
-        "max_assets", metavar="MAX_ASSETS", type=maxassets)
-    parser_rotate.add_argument(
-        "asset_paths", metavar="FILE", type=filepath_existing, nargs="+",
-        help="Filepath of asset that will be added to the release. "
-        "The number of files must be less than or equal to MAX_ASSETS."
+
+    # Upload asset
+    upload_parser = subparsers.add_parser(
+        'upload-asset', help="Upload an asset file to the release",
+        parents=[asset_options], conflict_handler='resolve'
     )
+    upload_parser.add_argument(
+        "-m", "--max-assets", metavar="MAX_ASSETS", type=max_assets,
+        help="Delete the oldest assets such that this number is not exceeded"
+    )
+    upload_parser.add_argument(
+        "-r", "--replace", action="store_true",
+        help="If an asset with the same name already exists, replace it. "
+              "Otherwise, nothing is uploaded"
+    )
+    upload_parser.add_argument(
+        "asset_paths", nargs="+", metavar="FILE", type=filepath_existing,
+        help="File path of asset that will be added to the release."
+    )
+
+    # Edit asset
+    edit_asset_parser = subparsers.add_parser(
+        'edit-asset', help="Edit the name/label of an existing asset",
+        parents=[asset_options], conflict_handler='resolve'
+    )
+    edit_asset_parser.add_argument('asset_id', metavar="ASSET_ID", type=int)
+
+    # Delete asset
+    delete_asset_parser = subparsers.add_parser(
+        "delete-asset", help="Delete an existing asset"
+    )
+    delete_asset_parser.add_argument('asset_id', metavar="ASSET_ID", type=int)
+
     return parser
 
 
 def verify_token(args):
-    """Verify that the given """
+    """Basic auth token checks"""
     if args.auth_token is not None:
         auth_token = args.auth_token
     else:
         auth_token = os.environ.get(args.auth_token_var)
         if auth_token is None:
-            print(
+            log.error(
                 'The provided auth token environment variable: '
                 '"{envvar}" is not defined'.format(
                     envvar=args.auth_token_var
@@ -520,36 +546,66 @@ def verify_token(args):
             )
             exit(1)
     if not auth_token:
-        print("The auth token cannot be empty!")
+        log.error("The auth token cannot be empty!")
         exit(1)
     return auth_token
-
-
-def create(rm, args):
-    return rm.create_release(
-        args.title or "Untitled Release",
-        args.body or "",
-        assets=args.asset_paths,
-        commitish=args.commitish or "master"
-    )
 
 
 def main():
     args = get_parser().parse_args()
     auth_token = verify_token(args)
-    rm = ReleaseManager(args.repo_slug, args.tag, auth_token)
+    rm = ReleaseManager(
+            repo_slug=args.repo_slug,
+            release_tag=args.tag,
+            auth_token=auth_token,
+            timeout=60
+    )
 
-    if args.command == "create":
-        exit(create(rm, args))
-    elif args.command == "delete":
-        rm.delete_release()
-    elif args.command == "replace":
-        rm.delete_release()
-        create(rm, args)
-    elif args.command == "rotate":
-        rm.rotate_by_date(args.max_assets, args.asset_paths)
+    cmd = args.command
 
-    return args
+    if cmd in ["create", "edit"]:
+        func = rm.create_release if cmd == "create" else rm.edit_release
+        result = func(
+            name=args.name,
+            body=args.body,
+            commitish=args.commitish,
+            draft_release=args.draft,
+            pre_release=not args.full_release,
+            replace=args.replace
+        )
+    elif cmd == "delete":
+        result = rm.delete_release()
+    elif cmd == "upload-asset":
+        if len(args.asset_paths) == 1:
+            rm.upload_asset(
+                asset_path=args.asset_paths[0],
+                asset_name=args.name,
+                asset_label=args.label,
+                replace_existing=args.replace,
+                max_assets=args.max_assets
+            )
+        else:
+            if args.name or args.label:
+                log.warning(
+                    "Asset name/label options ignored for multiple files"
+                )
+            # Remove any duplicates
+            paths = set(args.asset_paths)
+            for p in paths:
+                rm.upload_asset(
+                    asset_path=p,
+                    replace_existing=args.replace,
+                    max_assets=args.max_assets
+                )
+    elif cmd == "edit-asset":
+        result = rm.edit_asset(
+            args.asset_id, new_name=args.name, new_label=args.label
+        )
+        pass
+    elif cmd == "delete-asset":
+        result = rm.delete_asset(args.asset_id)
+
+    return result
 
 
 if __name__ == '__main__':
