@@ -7,7 +7,8 @@ import json
 import os
 import pprint
 import re
-from random import random as rnd
+import uuid
+
 import requests
 import logging
 
@@ -23,10 +24,11 @@ def default_params(f):
     tied to interfaces of ReleaseManager and requests!
     """
     def wrapper(self, *args, **kwargs):
-        d = {
-            'timeout': self.timeout,
-            'Authorization': 'token ' + self.auth_token
-        }
+        headers = {'Authorization': 'token ' + self.auth_token}
+        if 'headers' in kwargs:
+            headers.update(kwargs['headers'])
+        kwargs['headers'] = headers
+        d = {'timeout': self.timeout}
         d.update(kwargs)
         return f(self, *args, **d)
     return wrapper
@@ -214,6 +216,31 @@ class ReleaseManager:
             log.error("Failed to delete release!")
         return response.status_code == 204, response
 
+    def _upload_preconditions(self, asset_path, asset_name, tag):
+        """Check preconditions for asset upload
+
+        :return: (fulfilled, release_info or None)
+        """
+        if not os.path.isfile(asset_path):
+            log.error("File does not exist: {path}".format(path=asset_path))
+            return False, None
+
+        info, _ = self.get_release_data(tag=tag)
+        if not info:
+            log.error("Release data could not be retrieved, cannot upload.")
+            return False, None
+
+        existing = {a['name']: a['id'] for a in info['assets']}
+        if asset_name in existing:
+            log.error(
+                "Asset '{name}' already exists, not uploading!".format(
+                    name=asset_name
+                )
+            )
+            return False, info
+
+        return True, info
+
     def upload_asset(
             self, asset_path, tag=None,
             asset_name=None, asset_label=None
@@ -234,28 +261,12 @@ class ReleaseManager:
                  (False, None) if preconditions are not met.
         """
         # Check preconditions
-        if not os.path.isfile(asset_path):
-            log.error("File does not exist: {path}".format(path=asset_path))
-            return False, None
-
-        info, _ = self.get_release_data(tag=tag)
-        if not info:
-            log.error("Release data could not be retrieved, cannot upload.")
-            return False, None
-
-        existing = {a['name']: a['id'] for a in info['assets']}
         asset_name = asset_name or os.path.basename(asset_path)
-        if asset_name in existing:
-            log.error(
-                "Asset '{name}' already exists, not uploading!".format(
-                    name=asset_name
-                )
-            )
+        ok, info = self._upload_preconditions(asset_path, asset_name, tag)
+        if not ok:
             return False, None
 
-        response = self._upload(
-            asset_name, asset_label, asset_path, info
-        )
+        response = self._upload(asset_name, asset_label, asset_path, info)
         return response.status_code == 201, response
 
     def edit_asset(self, asset_id, new_name=None, new_label=None):
@@ -302,7 +313,7 @@ class ReleaseManager:
                 headers=headers,
                 data=f
             )
-            if response != 201:
+            if response.status_code != 201:
                 log_bad_response(response)
                 log.error(
                     "Upload of '{path}' failed".format(
@@ -335,6 +346,61 @@ class ReleaseManager:
             log.error("Failed to delete asset!")
         return response.status_code == 204, response
 
+    def replace_asset(
+            self, asset_path, tag=None, asset_name=None, asset_label=None
+    ):
+        """Replace any existing asset with the same name
+
+        If the asset does not already exist, upload as usual.
+        The new asset is uploaded first with a random prefix, followed by the
+        deletion of the old asset and renaming of the new asset.
+        The deletion of the old asset will only happen if the new file is
+        successfully uploaded, but if either the deletion or the edit fails
+        manual intervention will be required (this should only happen in case
+        of network errors or if the authorization is changed mid-operation).
+
+        :param asset_path: File path to the asset that will be uploaded
+        :param tag: Tag of release to upload to (default is self.release_tag)
+        :param asset_name: Name to use instead of the file name (optional)
+        :param asset_label: Label to display in the asset list (optional)
+        :return: (True, http response) if asset replacement is successful.
+                 (False, http response) if asset replacement is unsuccessful.
+                 (False, None) if preconditions are not met.
+        """
+        asset_name = asset_name or os.path.basename(asset_path)
+        ok, info = self._upload_preconditions(asset_path, asset_name, tag)
+        if ok:  # Just upload as usual
+            response = self._upload(asset_name, asset_label, asset_path, info)
+            return response.status_code == 201, response
+        elif not info:
+            return False, None
+
+        # Replacement required
+        tmp_name = uuid.uuid4().hex + '-' + asset_name
+        response = self._upload(tmp_name, asset_label, asset_path, info)
+        if not response.status_code == 201:
+            return False, response
+        tmp_id = json.loads(response.content.decode())['id']
+        cleanup_error_msg = \
+            """Uploaded tmp asset:
+            name: {asset_name}
+            id: {asset_id}
+            """.format(
+                asset_name=asset_name,
+                asset_id=tmp_id
+            )
+        old_id = {a['name']: a['id'] for a in info['assets']}[asset_name]
+        deleted, del_response = self.delete_asset(old_id)
+        if not deleted:
+            log.error("Uploaded asset will not be edited!")
+            log.error(cleanup_error_msg)
+            return False, del_response
+        edited, edit_response = self.edit_asset(tmp_id, new_name=asset_name)
+        if not edited:
+            log.error("Edit of new asset failed after old asset was deleted!")
+            log.error("New asset must be renamed to complete operation!")
+            log.error(cleanup_error_msg)
+        return edited, edit_response
 
 # Input verification functions
 
