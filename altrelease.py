@@ -51,12 +51,13 @@ class ReleaseManager:
     API_URL_TEMPLATE = "https://api.github.com/repos/{repo_slug}/releases/"
 
     def __init__(
-            self, repo_slug, release_tag, auth_token, timeout=None
+            self, repo_slug, auth_token, timeout=None
     ):
         self.base_url = self.API_URL_TEMPLATE.format(repo_slug=repo_slug)
         self.auth_token = auth_token
-        self.release_tag = release_tag
         self.timeout = timeout
+
+    # Helpers
 
     @default_params
     def get(self, *args, **kwargs):
@@ -74,10 +75,14 @@ class ReleaseManager:
     def delete(self, *args, **kwargs):
         return requests.delete(*args, **kwargs)
 
-    def get_release_data(self, tag=None, silent=False):
+    def get_release_data(self, rel_id=None, tag=None, silent=False):
         """Fetch the release info
+        Fetch release info by either id or tag.
+        Exactly one of the two must be supplied.
 
-        :param tag: Tag to use instead of self.release_tag
+        :param rel_id: Fetch release with this id
+        :type rel_id: int
+        :param tag: Fetch release with this tag
         :type tag: str
         :param silent: Suppress error messages for this function
         :type silent: bool
@@ -85,10 +90,13 @@ class ReleaseManager:
                   (None, http response) if retrieval request is unsuccessful.
         :rtype: (dict | None, requests.Response)
         """
-        url = self.base_url + "tags/" + (tag or self.release_tag)
+        if rel_id and tag or not (rel_id or tag):
+            msg = "Exactly one of 'rel_id' and 'tag' must be provided!"
+            raise ValueError(msg)
+        url = self.base_url + str(rel_id) if rel_id else "tags/" + tag
         response = self.get(url)
         if response.status_code != 200:
-            if silent:
+            if not silent:
                 log_bad_response(response)
                 log.error("Failed to fetch release!")
             info = None
@@ -97,7 +105,7 @@ class ReleaseManager:
         return info, response
 
     @staticmethod
-    def _release_data(
+    def _release_params(
             tag=None, name=None, body=None,
             commitish=None, draft=False, prerelease=True
     ):
@@ -117,12 +125,12 @@ class ReleaseManager:
         return {k: v for k, v in params.items() if v is not None}
 
     def create_release(
-            self, tag=None, name=None, body=None,
+            self, tag, name=None, body=None,
             commitish=None, draft=False, prerelease=True
     ):
         """Create a new release
 
-        :param tag: Name of the release tag, default is self.release_tag
+        :param tag: Release tag name (required, but can be the empty string)
         :type tag: str
         :param name: Name of the release
         :type name: str
@@ -140,30 +148,29 @@ class ReleaseManager:
                  (False, None) if the release already exists.
         :rtype: (bool, requests.Response | None)
         """
-        release_tag = tag or self.release_tag
-        info, _ = self.get_release_data(tag=release_tag, silent=True)
+        info, _ = self.get_release_data(tag=tag, silent=True)
         if info:
-            log.warning("Release already exists: " + release_tag)
+            log.error("Release tag already exists: " + tag)
             return False, None
-        release_data = self._release_data(
-            tag=release_tag, name=name, body=body, commitish=commitish,
+        release_data = self._release_params(
+            tag=tag, name=name, body=body, commitish=commitish,
             draft=draft, prerelease=prerelease
         )
         response = self.post(self.base_url[:-1], json=release_data)
         if response.status_code != 201:
             log_bad_response(response)
             log.error("Failed to create release!")
+        else:
+            print(json.loads(response.content.decode())['id'])
         return response.status_code == 201, response
 
     def edit_release(
-            self, tag=None, new_tag=None, name=None, body=None,
+            self, rel_id, new_tag=None, name=None, body=None,
             commitish=None, draft=None, prerelease=None
     ):
         """Edit an existing release
 
-        At least one parameter must be supplied, and the release must exist.
-
-        :param tag: Tag of release to edit (default is self.release_tag)
+        :param rel_id: Id of the release to edit
         :param new_tag: Change existing tag to this value
         :param name: Change the release name/title to this value
         :param body: Change the contents of the release body to this
@@ -176,47 +183,53 @@ class ReleaseManager:
                  (False, None) if no params or if release cannot be accessed
         :rtype: (bool, requests.Response | None)
         """
-        data = self._release_data(
+        data = self._release_params(
             tag=new_tag, name=name, body=body, commitish=commitish,
             draft=draft, prerelease=prerelease
         )
         if not data:
             log.error("No edit parameters supplied!")
             return False, None
+
+        response = self.patch(
+            self.base_url + "{id}".format(id=rel_id), json=data
+        )
+        if response.status_code != 200:
+            log_bad_response(response)
+            log.error("Failed to edit release!")
+        return response.status_code == 200, response
+
+    def edit_release_by_tag(self, tag, **kwargs):
         info, _ = self.get_release_data(tag=tag)
         if not info:
             log.error("Release not found, cannot edit!")
             return False, None
-        else:
-            response = self.patch(
-                self.base_url + "{id}".format(id=info['id']), json=data
-            )
-            if response.status_code != 200:
-                log_bad_response(response)
-                log.error("Failed to edit release!")
-            return response.status_code == 200, response
+        return self.edit_release(info['id'], **kwargs)
 
-    def delete_release(self, tag=None):
+    def delete_release(self, release_id):
         """Delete the release if it exists
 
-        :param tag: Tag of release to delete (default is self.release_tag)
+        :param release_id: Id of the release to delete
         :return: (True, http response) if deletion is successful.
                  (False, http response) if deletion request is unsuccessful.
                  (False, None) if the release cannot be accessed.
         :rtype: (bool, requests.Response | None)
         """
-        info, _ = self.get_release_data(tag=tag)
-        if not info:
-            log.warning("Release not found; nothing deleted!")
-            return False, None
-        release_id = info['id']
         response = self.delete(self.base_url + "{id}".format(id=release_id))
         if response.status_code != 204:
             log_bad_response(response)
             log.error("Failed to delete release!")
         return response.status_code == 204, response
 
-    def _upload_preconditions(self, asset_path, asset_name, tag):
+    def delete_release_by_tag(self, tag):
+        info, _ = self.get_release_data(tag=tag)
+        if not info:
+            log.warning("Release not found; nothing deleted!")
+            return False, None
+        return self.delete_release(info['id'])
+
+    def _upload_preconditions(self, asset_path, asset_name,
+                              rel_id=None, tag=None):
         """Check preconditions for asset upload
 
         :return: (fulfilled, release_info or None)
@@ -225,7 +238,7 @@ class ReleaseManager:
             log.error("File does not exist: {path}".format(path=asset_path))
             return False, None
 
-        info, _ = self.get_release_data(tag=tag)
+        info, _ = self.get_release_data(tag=tag, rel_id=rel_id)
         if not info:
             log.error("Release data could not be retrieved, cannot upload.")
             return False, None
@@ -237,23 +250,22 @@ class ReleaseManager:
                     name=asset_name
                 )
             )
-            return False, info
-
-        return True, info
+        return asset_name not in existing, info
 
     def upload_asset(
-            self, asset_path, tag=None,
+            self, asset_path, tag=None, rel_id=None,
             asset_name=None, asset_label=None
     ):
         """Upload a single file as a release asset
 
         Preconditions:
             The asset_path string must be a valid path to an existing file.
-            The release must exist.
-            An asset with the same name cannot exist in the same release
+            The release id or release tag ust exist (only one must be given).
+            An asset with the same name cannot exist in the same release.
 
         :param asset_path: File path to the asset that will be uploaded
-        :param tag: Tag of release to upload to (default is self.release_tag)
+        :param tag: Tag of release to upload to (use this or rel_id)
+        :param rel_id: Id of release to upload to (use this or tag)
         :param asset_name: Name to use instead of the file name (optional)
         :param asset_label: Label to display in the asset list (optional)
         :return: (True, http response) if asset upload is successful.
@@ -262,10 +274,11 @@ class ReleaseManager:
         """
         # Check preconditions
         asset_name = asset_name or os.path.basename(asset_path)
-        ok, info = self._upload_preconditions(asset_path, asset_name, tag)
+        ok, info = self._upload_preconditions(
+            asset_path, asset_name, tag=tag, rel_id=rel_id
+        )
         if not ok:
             return False, None
-
         response = self._upload(asset_name, asset_label, asset_path, info)
         return response.status_code == 201, response
 
@@ -313,14 +326,14 @@ class ReleaseManager:
                 headers=headers,
                 data=f
             )
-            if response.status_code != 201:
-                log_bad_response(response)
-                log.error(
-                    "Upload of '{path}' failed".format(
-                        path=asset_path
-                    )
+        if response.status_code != 201:
+            log_bad_response(response)
+            log.error(
+                "Upload of '{path}' failed".format(
+                    path=asset_path
                 )
-            return response
+            )
+        return response
 
     def _delete_oldest(self, max_assets):
         info, _ = self.get_release_data()
@@ -347,7 +360,8 @@ class ReleaseManager:
         return response.status_code == 204, response
 
     def replace_asset(
-            self, asset_path, tag=None, asset_name=None, asset_label=None
+            self, asset_path, rel_id=None, tag=None,
+            asset_name=None, asset_label=None
     ):
         """Replace any existing asset with the same name
 
@@ -360,7 +374,8 @@ class ReleaseManager:
         of network errors or if the authorization is changed mid-operation).
 
         :param asset_path: File path to the asset that will be uploaded
-        :param tag: Tag of release to upload to (default is self.release_tag)
+        :param rel_id: Id of release to upload to (use this or tag)
+        :param tag: Tag of release to upload to (use this or rel_id)
         :param asset_name: Name to use instead of the file name (optional)
         :param asset_label: Label to display in the asset list (optional)
         :return: (True, http response) if asset replacement is successful.
@@ -368,7 +383,9 @@ class ReleaseManager:
                  (False, None) if preconditions are not met.
         """
         asset_name = asset_name or os.path.basename(asset_path)
-        ok, info = self._upload_preconditions(asset_path, asset_name, tag)
+        ok, info = self._upload_preconditions(
+            asset_path, asset_name, tag=tag, rel_id=rel_id
+        )
         if ok:  # Just upload as usual
             response = self._upload(asset_name, asset_label, asset_path, info)
             return response.status_code == 201, response
@@ -402,6 +419,7 @@ class ReleaseManager:
             log.error(cleanup_error_msg)
         return edited, edit_response
 
+
 # Input verification functions
 
 def file_path_value(path):
@@ -419,8 +437,8 @@ def env_name_value(name):
     match = re.fullmatch("[^0-9=][^=]*", name)
     if not match:
         raise argparse.ArgumentTypeError(
-            '"{varname}" is not a valid environment variable name!'.format(
-                varname=name
+            '"{var_name}" is not a valid environment variable name!'.format(
+                var_name=name
             )
         )
     return name
