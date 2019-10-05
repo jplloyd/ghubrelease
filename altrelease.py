@@ -216,8 +216,7 @@ class ReleaseManager:
 
     def upload_asset(
             self, asset_path, tag=None,
-            asset_name=None, asset_label=None,
-            replace_existing=False, max_assets=None
+            asset_name=None, asset_label=None
     ):
         """Upload a single file as a release asset
 
@@ -230,16 +229,6 @@ class ReleaseManager:
         :param tag: Tag of release to upload to (default is self.release_tag)
         :param asset_name: Name to use instead of the file name (optional)
         :param asset_label: Label to display in the asset list (optional)
-        :param replace_existing: Whether to delete older assets with the same
-                                 name or just not upload the new asset.
-        :param max_assets: Maximum number of assets in a rolling release;
-                           if the new asset will exceed this limit, delete the
-                           n oldest existing assets (by last-updated date) such
-                           that the total #assets <= max_assets.
-                           Removal of old assets will only be attempted
-                           if the new upload is successful.
-        :type max_assets: int (>= 1)
-
         :return: (True, http response) if asset upload is successful.
                  (False, http response) if asset upload is unsuccessful.
                  (False, None) if preconditions are not met.
@@ -248,53 +237,26 @@ class ReleaseManager:
         if not os.path.isfile(asset_path):
             log.error("File does not exist: {path}".format(path=asset_path))
             return False, None
-        if not asset_name:
-            asset_name = os.path.basename(asset_path)
+
         info, _ = self.get_release_data(tag=tag)
         if not info:
             log.error("Release data could not be retrieved, cannot upload.")
             return False, None
 
         existing = {a['name']: a['id'] for a in info['assets']}
-        if asset_name in existing and not replace_existing:
+        asset_name = asset_name or os.path.basename(asset_path)
+        if asset_name in existing:
             log.error(
-                "Asset named '{name}' already exists, not uploading!".format(
+                "Asset '{name}' already exists, not uploading!".format(
                     name=asset_name
                 )
             )
             return False, None
 
-        elif asset_name in existing:
-            # Upload new asset first with random prefix
-            while True:
-                tmp_name = "tmp" + str(int(rnd()*1e4)) + asset_name
-                if tmp_name not in existing:
-                    break
-            response = self._upload(tmp_name, None, asset_path, info)
-            if response.status_code == 201:
-                new_id = json.loads(response.content.decode())['id']
-                del_response = self.delete_asset(existing[asset_name])
-                if del_response.status_code == 204:
-                    self.edit_asset(
-                        new_id, new_name=asset_name, new_label=asset_label
-                    )
-                else:
-                    log.error(
-                        "Failed to delete old asset for '{name}'. "
-                        "New asset uploaded as {tmp_name} w. id {id}".format(
-                            name=asset_name, tmp_name=tmp_name, id=new_id
-                        )
-                    )
-                    return False
-        else:
-            response = self._upload(
-                asset_name, asset_label, asset_path, info
-            )
-
-        if max_assets:
-            self._delete_oldest(max_assets)
-
-        return response.status_code == 201
+        response = self._upload(
+            asset_name, asset_label, asset_path, info
+        )
+        return response.status_code == 201, response
 
     def edit_asset(self, asset_id, new_name=None, new_label=None):
         """Edit existing asset
@@ -341,20 +303,23 @@ class ReleaseManager:
                 data=f
             )
             if response != 201:
-                log.error("Upload of '{path}' failed".format(
-                    path=asset_path
-                ))
+                log_bad_response(response)
+                log.error(
+                    "Upload of '{path}' failed".format(
+                        path=asset_path
+                    )
+                )
             return response
 
     def _delete_oldest(self, max_assets):
         info, _ = self.get_release_data()
         assets = sorted(info['assets'], key=lambda a: a['updated_at'])
         if len(assets) > max_assets:
-            for a in assets[:len(assets) - max_assets]:
+            for asset in assets[:len(assets) - max_assets]:
                 log.info("Deleting asset '{name}'".format(
-                    name=a['name']
+                    name=asset['name']
                 ))
-                self.delete_asset(a['id'])
+                self.delete_asset(asset['id'])
 
     def delete_asset(self, a_id):
         """Delete asset with the given id
@@ -587,9 +552,7 @@ def main():
             rm.upload_asset(
                 asset_path=args.asset_paths[0],
                 asset_name=args.name,
-                asset_label=args.label,
-                replace_existing=args.replace,
-                max_assets=args.max_assets
+                asset_label=args.label
             )
         else:
             if args.name or args.label:
@@ -600,9 +563,7 @@ def main():
             paths = set(args.asset_paths)
             for p in paths:
                 rm.upload_asset(
-                    asset_path=p,
-                    replace_existing=args.replace,
-                    max_assets=args.max_assets
+                    asset_path=p
                 )
     elif cmd == "edit-asset":
         result = rm.edit_asset(
