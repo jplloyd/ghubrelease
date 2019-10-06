@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 # Copyright (C) 2019 Jesper Lloyd
 # Released under GNU GPL v2+, read the file 'LICENSE' for more information.
+"""
+Python wrapper for the Github Releases API
+
+Provides safe asset replacement and by-date deletion, in addition to
+the standard functionality provided directly by the original API.
+
+This code is not quite production-level, so use with caution.
+"""
 
 import argparse
 import json
@@ -228,7 +236,7 @@ class ReleaseManager:
         return self.delete_release(info['id'])
 
     def _upload_preconditions(self, asset_path, asset_name,
-                              rel_id=None, tag=None):
+                              rel_id=None, tag=None, ignore_existing=False):
         """Check preconditions for asset upload
 
         :return: (fulfilled, release_info or None)
@@ -243,7 +251,7 @@ class ReleaseManager:
             return False, None
 
         existing = {a['name']: a['id'] for a in info['assets']}
-        if asset_name in existing:
+        if not ignore_existing and asset_name in existing:
             log.error(
                 "Asset '{name}' already exists, not uploading!".format(
                     name=asset_name
@@ -393,7 +401,8 @@ class ReleaseManager:
         """
         asset_name = asset_name or os.path.basename(asset_path)
         ok, info = self._upload_preconditions(
-            asset_path, asset_name, tag=tag, rel_id=rel_id
+            asset_path, asset_name, tag=tag, rel_id=rel_id,
+            ignore_existing=True
         )
         if ok:  # Just upload as usual
             response = self._upload(asset_name, asset_label, asset_path, info)
@@ -494,7 +503,7 @@ def get_parser():
         "repo_slug", type=repo_slug_value, metavar="REPO_SLUG",
         help="The 'user/repository' combination of the release"
     )
-    tag_id_parser = argparse.ArgumentParser()
+    tag_id_parser = argparse.ArgumentParser(add_help=False)
     ref_group = tag_id_parser.add_mutually_exclusive_group(required=True)
     ref_group.add_argument(
         "-t", "--tag", metavar="TAG_NAME", type=str,
@@ -523,7 +532,7 @@ def get_parser():
     subparsers.required = True
 
     # Common options for release creation/modification
-    release_options = argparse.ArgumentParser()
+    release_options = argparse.ArgumentParser(add_help=False)
     release_options.add_argument(
         "-n", "--name", metavar="NAME", type=str,
         help="The name of the release")
@@ -545,7 +554,7 @@ def get_parser():
     # Create release
     create_parser = subparsers.add_parser(
         'create', help="Create a new release",
-        parents=[release_options], conflict_handler='resolve'
+        parents=[release_options]
     )
     create_parser.add_argument(
         "tag", metavar="TAG_NAME", help="Tag of the new release"
@@ -554,7 +563,7 @@ def get_parser():
     # Edit release
     edit_parser = subparsers.add_parser(
         'edit', help="Edit the release, if it exists.",
-        parents=[ref_group, release_options], conflict_handler='resolve'
+        parents=[ref_group, release_options]
     )
     edit_parser.add_argument(
         '-s', '--switch-tag-to', metavar="NEW_TAG",
@@ -562,22 +571,13 @@ def get_parser():
     )
 
     # Delete release
-    delete_parser = subparsers.add_parser(
-        'delete', help="Delete the release, if it exists."
-    )
-    # Using only the ref_group in the parents does not work for some reason
-    rr_group = delete_parser.add_mutually_exclusive_group(required=True)
-    rr_group.add_argument(
-        "-t", "--tag", metavar="TAG_NAME", type=str,
-        help="Delete release by tag"
-    )
-    rr_group.add_argument(
-        "-i", "--release-id", metavar="RELEASE_ID", type=int,
-        help="Delete release by id"
+    subparsers.add_parser(
+        'delete', help="Delete the release, if it exists.",
+        parents=[ref_group]
     )
 
     # Common options for asset/creation modification
-    asset_options = argparse.ArgumentParser()
+    asset_options = argparse.ArgumentParser(add_help=False)
     asset_options.add_argument(
         "-n", "--name", metavar="NAME", type=str,
         help="Asset name (file name when downloading)"
@@ -592,7 +592,7 @@ def get_parser():
     # Upload asset
     upload_parser = subparsers.add_parser(
         'upload-asset', help="Upload an asset file to the release",
-        parents=[ref_group, asset_options], conflict_handler='resolve'
+        parents=[ref_group, asset_options]
     )
     upload_parser.add_argument(
         "-m", "--max-assets", metavar="MAX_ASSETS", type=max_assets_value,
@@ -646,7 +646,6 @@ def verify_token(args):
 
 def main():
     args = get_parser().parse_args()
-    print(args)
     auth_token = verify_token(args)
     rm = ReleaseManager(
             repo_slug=args.repo_slug,
@@ -728,9 +727,8 @@ def main():
         result = rm.delete_asset(args.asset_id)
     else:
         raise NotImplementedError("Command not implemented:", cmd)
-
     return result
 
 
 if __name__ == '__main__':
-    exit(main()[0])
+    exit(not main()[0])
