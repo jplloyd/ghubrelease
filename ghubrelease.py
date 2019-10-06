@@ -12,6 +12,7 @@ This code is not quite production-level, so use with caution.
 
 import argparse
 import json
+import mimetypes
 import os
 import pprint
 import re
@@ -328,9 +329,13 @@ class ReleaseManager:
             url += "&label={label}".format(label=asset_label)
         headers = {
             'Accept': 'application/vnd.github.manifold-preview',
-            'Content-Type': 'application/octet-stream',
         }
-        with open(asset_path, "r") as f:
+        with open(asset_path, "rb") as f:
+            mtype, _ = mimetypes.guess_type(asset_path)
+            if mtype:
+                headers['Content-Type'] = mtype
+            else:
+                headers['Content-Type'] = 'application/octet-stream'
             response = self.post(
                 url,
                 headers=headers,
