@@ -20,8 +20,6 @@ import uuid
 import requests
 import logging
 
-import urllib3
-
 log = logging.getLogger(__file__)
 
 
@@ -438,6 +436,8 @@ class ReleaseManager:
         return edited, edit_response
 
 
+# Code below this point is only related to CLI input/verification
+
 # Input verification functions
 
 def file_path_value(path):
@@ -502,6 +502,10 @@ def get_parser():
     parser.add_argument(
         "repo_slug", type=repo_slug_value, metavar="REPO_SLUG",
         help="The 'user/repository' combination of the release"
+    )
+    parser.add_argument(
+        '--timeout', metavar="SECONDS", type=float,
+        help="Timeout to use for network requests, default is 60 seconds"
     )
     tag_id_parser = argparse.ArgumentParser(add_help=False)
     ref_group = tag_id_parser.add_mutually_exclusive_group(required=True)
@@ -650,7 +654,7 @@ def main():
     rm = ReleaseManager(
             repo_slug=args.repo_slug,
             auth_token=auth_token,
-            timeout=60
+            timeout=args.timeout or 60
     )
 
     cmd = args.command
