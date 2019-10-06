@@ -34,7 +34,7 @@ def default_params(f):
     return wrapper
 
 
-def log_bad_response(response):
+def log_response_error(response):
     log.error("HTTP status code: {code}".format(code=response.status_code))
     decoded = response.content.decode()
     try:
@@ -93,11 +93,11 @@ class ReleaseManager:
         if not ((rel_id is None) ^ (tag is None)):
             msg = "Exactly one of 'rel_id' and 'tag' must be provided!"
             raise ValueError(msg)
-        url = self.base_url + str(rel_id) if rel_id else "tags/" + str(tag)
+        url = self.base_url + (str(rel_id) if rel_id else "tags/" + str(tag))
         response = self.get(url)
         if response.status_code != 200:
             if not silent:
-                log_bad_response(response)
+                log_response_error(response)
                 log.error("Failed to fetch release!")
             info = None
         else:
@@ -157,7 +157,7 @@ class ReleaseManager:
         )
         response = self.post(self.base_url[:-1], json=release_data)
         if response.status_code != 201:
-            log_bad_response(response)
+            log_response_error(response)
             log.error("Failed to create release!")
         else:
             print(json.loads(response.content.decode())['id'])
@@ -194,7 +194,7 @@ class ReleaseManager:
             self.base_url + "{id}".format(id=rel_id), json=data
         )
         if response.status_code != 200:
-            log_bad_response(response)
+            log_response_error(response)
             log.error("Failed to edit release!")
         return response.status_code == 200, response
 
@@ -216,14 +216,14 @@ class ReleaseManager:
         """
         response = self.delete(self.base_url + "{id}".format(id=release_id))
         if response.status_code != 204:
-            log_bad_response(response)
+            log_response_error(response)
             log.error("Failed to delete release!")
         return response.status_code == 204, response
 
     def delete_release_by_tag(self, tag):
         info, _ = self.get_release_data(tag=tag)
         if not info:
-            log.warning("Release not found; nothing deleted!")
+            log.error("Release not found; nothing deleted!")
             return False, None
         return self.delete_release(info['id'])
 
@@ -279,6 +279,11 @@ class ReleaseManager:
         if not ok:
             return False, None
         response = self._upload(asset_name, asset_label, asset_path, info)
+        if response.status_code == 201:
+            print(
+                json.loads(response.content.decode())['id'],
+                asset_name
+            )
         return response.status_code == 201, response
 
     def edit_asset(self, asset_id, new_name=None, new_label=None):
@@ -304,7 +309,7 @@ class ReleaseManager:
             json={k: v for k, v in data.items() if v is not None}
         )
         if response.status_code != 200:
-            log_bad_response(response)
+            log_response_error(response)
             log.error("Failed to edit asset!")
         return response.status_code == 200, response
 
@@ -326,7 +331,7 @@ class ReleaseManager:
                 data=f
             )
         if response.status_code != 201:
-            log_bad_response(response)
+            log_response_error(response)
             log.error(
                 "Upload of '{path}' failed".format(
                     path=asset_path
@@ -334,15 +339,20 @@ class ReleaseManager:
             )
         return response
 
-    def _delete_oldest(self, max_assets, rel_id=None, tag=None):
+    def delete_oldest_assets(self, max_assets, rel_id=None, tag=None):
         info, _ = self.get_release_data(rel_id=rel_id, tag=tag)
         assets = sorted(info['assets'], key=lambda a: a['updated_at'])
+        success = True
+        acc_responses = []
         if len(assets) > max_assets:
             for asset in assets[:len(assets) - max_assets]:
                 log.info("Deleting asset '{name}'".format(
                     name=asset['name']
                 ))
-                self.delete_asset(asset['id'])
+                ok, response = self.delete_asset(asset['id'])
+                success = success and ok
+                acc_responses.append(response)
+        return success, acc_responses
 
     def delete_asset(self, a_id):
         """Delete asset with the given id
@@ -354,7 +364,7 @@ class ReleaseManager:
         """
         response = self.delete(self.base_url + "assets/{id}".format(id=a_id))
         if response.status_code != 204:
-            log_bad_response(response)
+            log_response_error(response)
             log.error("Failed to delete asset!")
         return response.status_code == 204, response
 
@@ -469,6 +479,14 @@ def max_assets_value(value):
         )
 
 
+def true_or_false(value):
+    if not value.lower() in ['true', 'false']:
+        raise argparse.ArgumentTypeError(
+            "Argument must be 'true' or 'false' (case insensitive)"
+        )
+    return value.lower() == 'true'
+
+
 def get_parser():
     parser = argparse.ArgumentParser()
 
@@ -476,15 +494,17 @@ def get_parser():
         "repo_slug", type=repo_slug_value, metavar="REPO_SLUG",
         help="The 'user/repository' combination of the release"
     )
-    rel_group = parser.add_mutually_exclusive_group(required=True)
-    rel_group.add_argument(
+    tag_id_parser = argparse.ArgumentParser()
+    ref_group = tag_id_parser.add_mutually_exclusive_group(required=True)
+    ref_group.add_argument(
         "-t", "--tag", metavar="TAG_NAME", type=str,
         help="Identify release by tag"
     )
-    rel_group.add_argument(
-        "-i", "--release-id", metavar="RELEASE_ID", type=str,
+    ref_group.add_argument(
+        "-i", "--release-id", metavar="RELEASE_ID", type=int,
         help="Identify release by id"
     )
+
     auth_group = parser.add_mutually_exclusive_group(required=True)
     auth_group.add_argument(
         "-a", "--auth-token-var", metavar="VAR_NAME",
@@ -505,7 +525,7 @@ def get_parser():
     # Common options for release creation/modification
     release_options = argparse.ArgumentParser()
     release_options.add_argument(
-        "-name", "--name", metavar="NAME", type=str,
+        "-n", "--name", metavar="NAME", type=str,
         help="The name of the release")
     release_options.add_argument(
         "-b", "--body", metavar="BODY", type=str,
@@ -514,12 +534,12 @@ def get_parser():
         "-c", "--commitish", metavar="COMMITISH", type=str,
         help="Commit/branch of the release")
     release_options.add_argument(
-        "-f", "--full-release", action='store_true',
-        help="Mark release as full release (not prerelease)"
+        "-p", "--prerelease", type=true_or_false,
+        help="Mark release as a prerelease (default is true)"
     )
     release_options.add_argument(
-        '-d', '--draft', action='store_true',
-        help="Mark release as a draft"
+        '-d', '--draft', type=true_or_false,
+        help="Mark release as a draft (default is false)"
     )
 
     # Create release
@@ -532,14 +552,28 @@ def get_parser():
     )
 
     # Edit release
-    subparsers.add_parser(
+    edit_parser = subparsers.add_parser(
         'edit', help="Edit the release, if it exists.",
-        parents=[release_options], conflict_handler='resolve'
+        parents=[ref_group, release_options], conflict_handler='resolve'
+    )
+    edit_parser.add_argument(
+        '-s', '--switch-tag-to', metavar="NEW_TAG",
+        help="Switch existing tag to the provided one"
     )
 
     # Delete release
-    subparsers.add_parser(
+    delete_parser = subparsers.add_parser(
         'delete', help="Delete the release, if it exists."
+    )
+    # Using only the ref_group in the parents does not work for some reason
+    rr_group = delete_parser.add_mutually_exclusive_group(required=True)
+    rr_group.add_argument(
+        "-t", "--tag", metavar="TAG_NAME", type=str,
+        help="Delete release by tag"
+    )
+    rr_group.add_argument(
+        "-i", "--release-id", metavar="RELEASE_ID", type=int,
+        help="Delete release by id"
     )
 
     # Common options for asset/creation modification
@@ -558,7 +592,7 @@ def get_parser():
     # Upload asset
     upload_parser = subparsers.add_parser(
         'upload-asset', help="Upload an asset file to the release",
-        parents=[asset_options], conflict_handler='resolve'
+        parents=[ref_group, asset_options], conflict_handler='resolve'
     )
     upload_parser.add_argument(
         "-m", "--max-assets", metavar="MAX_ASSETS", type=max_assets_value,
@@ -567,7 +601,7 @@ def get_parser():
     upload_parser.add_argument(
         "-r", "--replace", action="store_true",
         help="If an asset with the same name already exists, replace it. "
-              "Otherwise, nothing is uploaded"
+              "Otherwise, nothing is uploaded."
     )
     upload_parser.add_argument(
         "asset_paths", nargs="+", metavar="FILE", type=file_path_value,
@@ -599,8 +633,8 @@ def verify_token(args):
         if auth_token is None:
             log.error(
                 'The provided auth token environment variable: '
-                '"{envvar}" is not defined'.format(
-                    envvar=args.auth_token_var
+                '"{env_var}" is not defined'.format(
+                    env_var=args.auth_token_var
                 )
             )
             exit(1)
@@ -612,6 +646,7 @@ def verify_token(args):
 
 def main():
     args = get_parser().parse_args()
+    print(args)
     auth_token = verify_token(args)
     rm = ReleaseManager(
             repo_slug=args.repo_slug,
@@ -620,26 +655,46 @@ def main():
     )
 
     cmd = args.command
-
-    if cmd in ["create", "edit"]:
-        func = rm.create_release if cmd == "create" else rm.edit_release
-        result = func(
+    rel_args = None
+    if cmd in ['create', 'edit']:
+        rel_args = dict(
             name=args.name,
             body=args.body,
             commitish=args.commitish,
-            draft_release=args.draft,
-            pre_release=not args.full_release,
-            replace=args.replace
+            draft=args.draft,
+            prerelease=args.prerelease,
         )
-    elif cmd == "delete":
-        result = rm.delete_release()
-    elif cmd == "upload-asset":
-        if len(args.asset_paths) == 1:
-            result = rm.upload_asset(
-                asset_path=args.asset_paths[0],
-                asset_name=args.name,
-                asset_label=args.label
+    if cmd == "create":
+        result = rm.create_release(
+            tag=args.tag,
+            **rel_args
+        )
+    elif cmd == "edit":
+        if args.release_id:
+            result = rm.edit_release(
+                args.release_id,
+                **rel_args
             )
+        else:
+            result = rm.edit_release_by_tag(
+                args.tag,
+                new_tag=args.switch_tag_to,
+                **rel_args
+            )
+    elif cmd == "delete":
+        if args.release_id:
+            result = rm.delete_release(args.release_id)
+        else:
+            result = rm.delete_release_by_tag(args.tag)
+    elif cmd == "upload-asset":
+        upload = rm.replace_asset if args.replace else rm.upload_asset
+        if len(args.asset_paths) == 1:
+            result = upload(
+                asset_path=args.asset_paths[0],
+                tag=args.tag,
+                rel_id=args.release_id,
+                asset_name=args.name,
+                asset_label=args.label)
         else:
             if args.name or args.label:
                 log.warning(
@@ -647,17 +702,28 @@ def main():
                 )
             # Remove any duplicates
             paths = set(args.asset_paths)
-            result = False
+            success = True
+            acc_responses = []
             for p in paths:
-                success, _ = rm.upload_asset(
-                    asset_path=p
+                ok, response = upload(
+                    asset_path=p,
+                    tag=args.tag,
+                    rel_id=args.release_id
                 )
-                result = result and success
+                success = success and ok
+                acc_responses.append(response)
+            result = success, acc_responses
+        if args.max_assets:
+            success, responses = rm.delete_oldest_assets(
+                max_assets=args.max_assets,
+                rel_id=args.release_id,
+                tag=args.tag
+            )
+            result = result[0] and success, (result[1], responses)
     elif cmd == "edit-asset":
         result = rm.edit_asset(
             args.asset_id, new_name=args.name, new_label=args.label
         )
-        pass
     elif cmd == "delete-asset":
         result = rm.delete_asset(args.asset_id)
     else:
@@ -667,4 +733,4 @@ def main():
 
 
 if __name__ == '__main__':
-    exit(main())
+    exit(main()[0])
