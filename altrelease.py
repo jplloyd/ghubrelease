@@ -90,10 +90,10 @@ class ReleaseManager:
                   (None, http response) if retrieval request is unsuccessful.
         :rtype: (dict | None, requests.Response)
         """
-        if rel_id and tag or not (rel_id or tag):
+        if not ((rel_id is None) ^ (tag is None)):
             msg = "Exactly one of 'rel_id' and 'tag' must be provided!"
             raise ValueError(msg)
-        url = self.base_url + str(rel_id) if rel_id else "tags/" + tag
+        url = self.base_url + str(rel_id) if rel_id else "tags/" + str(tag)
         response = self.get(url)
         if response.status_code != 200:
             if not silent:
@@ -148,8 +148,7 @@ class ReleaseManager:
                  (False, None) if the release already exists.
         :rtype: (bool, requests.Response | None)
         """
-        info, _ = self.get_release_data(tag=tag, silent=True)
-        if info:
+        if not draft and self.get_release_data(tag=tag, silent=True)[0]:
             log.error("Release tag already exists: " + tag)
             return False, None
         release_data = self._release_params(
@@ -335,8 +334,8 @@ class ReleaseManager:
             )
         return response
 
-    def _delete_oldest(self, max_assets):
-        info, _ = self.get_release_data()
+    def _delete_oldest(self, max_assets, rel_id=None, tag=None):
+        info, _ = self.get_release_data(rel_id=rel_id, tag=tag)
         assets = sorted(info['assets'], key=lambda a: a['updated_at'])
         if len(assets) > max_assets:
             for asset in assets[:len(assets) - max_assets]:
@@ -477,9 +476,14 @@ def get_parser():
         "repo_slug", type=repo_slug_value, metavar="REPO_SLUG",
         help="The 'user/repository' combination of the release"
     )
-    parser.add_argument(
-        "tag", metavar="TAG_NAME", type=str,
-        help="The release tag to operate on"
+    rel_group = parser.add_mutually_exclusive_group(required=True)
+    rel_group.add_argument(
+        "-t", "--tag", metavar="TAG_NAME", type=str,
+        help="Identify release by tag"
+    )
+    rel_group.add_argument(
+        "-i", "--release-id", metavar="RELEASE_ID", type=str,
+        help="Identify release by id"
     )
     auth_group = parser.add_mutually_exclusive_group(required=True)
     auth_group.add_argument(
@@ -524,8 +528,7 @@ def get_parser():
         parents=[release_options], conflict_handler='resolve'
     )
     create_parser.add_argument(
-        "-r", "--replace", action="store_true",
-        help="If there is an existing release for the tag, delete it first."
+        "tag", metavar="TAG_NAME", help="Tag of the new release"
     )
 
     # Edit release
@@ -612,7 +615,6 @@ def main():
     auth_token = verify_token(args)
     rm = ReleaseManager(
             repo_slug=args.repo_slug,
-            release_tag=args.tag,
             auth_token=auth_token,
             timeout=60
     )
@@ -633,7 +635,7 @@ def main():
         result = rm.delete_release()
     elif cmd == "upload-asset":
         if len(args.asset_paths) == 1:
-            rm.upload_asset(
+            result = rm.upload_asset(
                 asset_path=args.asset_paths[0],
                 asset_name=args.name,
                 asset_label=args.label
@@ -645,10 +647,12 @@ def main():
                 )
             # Remove any duplicates
             paths = set(args.asset_paths)
+            result = False
             for p in paths:
-                rm.upload_asset(
+                success, _ = rm.upload_asset(
                     asset_path=p
                 )
+                result = result and success
     elif cmd == "edit-asset":
         result = rm.edit_asset(
             args.asset_id, new_name=args.name, new_label=args.label
@@ -656,6 +660,8 @@ def main():
         pass
     elif cmd == "delete-asset":
         result = rm.delete_asset(args.asset_id)
+    else:
+        raise NotImplementedError("Command not implemented:", cmd)
 
     return result
 
